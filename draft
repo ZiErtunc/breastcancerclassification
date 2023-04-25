@@ -1,0 +1,142 @@
+import os
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import EfficientNetB0, ResNet50
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+
+# Define some hyperparameters
+BATCH_SIZE = 16
+EPOCHS = 3
+LEARNING_RATE = 1e-4
+IMG_SIZE: int = 512
+
+# Define the data directories
+train_dir = r'C:\Users\asus\Desktop\Image\train'
+val_dir = r'C:\Users\asus\Desktop\Image\val'
+test_dir = r'C:\Users\asus\Desktop\Image\test'
+
+# Resize the images in the train directory
+for root, dirs, files in os.walk(train_dir):
+    for file in files:
+        img_path = os.path.join(root, file)
+        img = cv2.imread(img_path)
+        img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+        cv2.imwrite(img_path, img)
+
+# Resize the images in the validation directory
+for root, dirs, files in os.walk(val_dir):
+    for file in files:
+        img_path = os.path.join(root, file)
+        img = cv2.imread(img_path)
+        img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+        cv2.imwrite(img_path, img)
+
+# Resize the images in the test directory
+for root, dirs, files in os.walk(test_dir):
+    for file in files:
+        img_path = os.path.join(root, file)
+        img = cv2.imread(img_path)
+        img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+        cv2.imwrite(img_path, img)
+
+# Create the data generators
+train_datagen = ImageDataGenerator(rescale=1. / 255,
+                                   shear_range=0.2,
+                                   zoom_range=0.2,
+                                   horizontal_flip=True)
+val_datagen = ImageDataGenerator(rescale=1. / 255)
+test_datagen = ImageDataGenerator(rescale=1. / 255)
+
+train_generator = train_datagen.flow_from_directory(train_dir,
+                                                    target_size=(IMG_SIZE, IMG_SIZE),
+                                                    batch_size=BATCH_SIZE,
+                                                    class_mode='binary')
+
+val_generator = val_datagen.flow_from_directory(val_dir,
+                                                target_size=(IMG_SIZE, IMG_SIZE),
+                                                batch_size=BATCH_SIZE,
+                                                class_mode='binary')
+
+test_generator = test_datagen.flow_from_directory(test_dir,
+                                                  target_size=(IMG_SIZE, IMG_SIZE),
+                                                  batch_size=BATCH_SIZE,
+                                                  class_mode='binary')
+
+# Define the model architectures
+efficientnet_model = EfficientNetB0(include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+efficientnet_output = efficientnet_model.layers[-1].output
+efficientnet_output = GlobalAveragePooling2D()(efficientnet_output)
+efficientnet_output = Dense(512, activation='relu')(efficientnet_output)
+efficientnet_output = Dropout(0.5)(efficientnet_output)
+efficientnet_output = Dense(1, activation='sigmoid')(efficientnet_output)
+efficientnet_model = Model(inputs=efficientnet_model.inputs, outputs=efficientnet_output)
+
+resnet_model = ResNet50(include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+resnet_output = resnet_model.layers[-1].output
+resnet_output = GlobalAveragePooling2D()(resnet_output)
+resnet_output = Dense(512, activation='relu')(resnet_output)
+resnet_output = Dropout(0.5)(resnet_output)
+resnet_output = Dense(1, activation='sigmoid')(resnet_output)
+resnet_model = Model(inputs=resnet_model.inputs, outputs=resnet_output)
+
+# Compile the models
+efficientnet_model.compile(optimizer=Adam(lr=LEARNING_RATE), loss='binary_crossentropy', metrics=['accuracy'])
+resnet_model.compile(optimizer=Adam(lr=LEARNING_RATE), loss='binary_crossentropy', metrics=['accuracy'])
+
+# Define early stopping callback
+earlystop_callback = EarlyStopping(
+    monitor='val_loss',
+    mode='min',
+    patience=3,
+    restore_best_weights=True,
+    verbose=1
+)
+
+# Train the models with early stopping
+efficientnet_history = efficientnet_model.fit(
+    train_generator,
+    epochs=3,
+    validation_data=val_generator,
+    callbacks=[earlystop_callback]
+)
+
+resnet_history = resnet_model.fit(
+    train_generator,
+    epochs=3,
+    validation_data=val_generator,
+    callbacks=[earlystop_callback]
+)
+
+# Evaluate the models on the test data
+efficientnet_scores = efficientnet_model.evaluate(test_generator)
+print('EfficientNet model test accuracy:', efficientnet_scores[1])
+
+resnet_scores = resnet_model.evaluate(test_generator)
+print('ResNet model test accuracy:', resnet_scores[1])
+
+# Plot the training and validation accuracy of the models over time
+plt.plot(efficientnet_history.history['accuracy'], label='EfficientNet train accuracy')
+plt.plot(efficientnet_history.history['val_accuracy'], label='EfficientNet val accuracy')
+plt.plot(resnet_history.history['accuracy'], label='ResNet train accuracy')
+plt.plot(resnet_history.history['val_accuracy'], label='ResNet val accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+# Make predictions on the test data using the trained models
+efficientnet_predictions = efficientnet_model.predict(test_generator)
+resnet_predictions = resnet_model.predict(test_generator)
+
+# Save the predictions as benign or malign images
+test_images = os.listdir(test_dir)
+for i, img in enumerate(test_images):
+    if efficientnet_predictions[i] < 0.5:
+        os.rename(os.path.join(test_dir, img), os.path.join(test_dir, 'benign', img))
+    else:
+        os.rename(os.path.join(test_dir, img), os.path.join(test_dir, 'malign', img))
